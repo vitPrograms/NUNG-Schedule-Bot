@@ -5,6 +5,7 @@ from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram.constants import ParseMode
 import threading
+import asyncio
 from flask import Flask
 
 from scraper import get_schedule_html, parse_schedule
@@ -298,8 +299,16 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.TEXT & (filters.Regex(f"^{HELP_CMD}$")), help_command))
 
 
-    # Run the bot in a separate thread
-    thread = threading.Thread(target=application.run_polling)
+    # This function will run in a separate thread
+    def bot_thread_target():
+        # Create a new event loop for this thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        # run_polling is a blocking call that will run forever
+        application.run_polling()
+
+    # Start the bot in a separate thread
+    thread = threading.Thread(target=bot_thread_target)
     thread.start()
 
 
