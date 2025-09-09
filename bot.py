@@ -1,9 +1,11 @@
 import logging
 import os
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram.constants import ParseMode
+import threading
+from flask import Flask
 
 from scraper import get_schedule_html, parse_schedule
 import storage
@@ -21,46 +23,63 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Define command constants for buttons
+SCHEDULE_CMD = "🗓️ Розклад"
+MY_SUBJECTS_CMD = "📚 Мої предмети"
+HELP_CMD = "ℹ️ Допомога"
+
+MAIN_KEYBOARD = [
+    [SCHEDULE_CMD, MY_SUBJECTS_CMD],
+    [HELP_CMD]
+]
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Sends a welcome message when the /start command is issued."""
+    """Sends a welcome message and shows the main menu."""
     user = update.effective_user
     await update.message.reply_html(
-        rf"Hi {user.mention_html()}! I am your schedule assistant. Use /schedule to get the current week's schedule.",
+        rf"Привіт, {user.mention_html()}! Я ваш асистент з розкладу. Оберіть дію на клавіатурі.",
+        reply_markup=ReplyKeyboardMarkup(MAIN_KEYBOARD, resize_keyboard=True),
     )
 
 def format_schedule(schedule: dict) -> str:
-    """Formats the schedule dictionary into a user-friendly string."""
+    """Formats the schedule dictionary into a user-friendly fixed-width string."""
     if not schedule:
-        return "Could not retrieve schedule."
+        return "Не вдалося отримати розклад або для обраних предметів немає пар."
 
-    message = ""
+    message = "```\n" # Start of monospace block
     for date, day_info in schedule.items():
-        message += f"📅 *{day_info['day_of_week']}, {date}*\n"
-        message += "-" * 20 + "\n"
+        header = f"🗓️ {day_info['day_of_week']}, {date} "
+        message += f"{header}\n"
+        message += "─" * (len(header) - 1) + "\n\n"
 
         if not day_info["lessons"]:
-            message += "No lessons for this day.\n\n"
+            message += "  🎉 Пар немає\n\n"
             continue
 
         for lesson in day_info["lessons"]:
-            message += f"*{lesson['lesson_number']}. ({lesson['time']})*\n"
+            time_str = f"🕘 {lesson['time']} | Пара: {lesson['lesson_number']}"
+            message += f"{time_str}\n"
             
-            for info in lesson['lessons_info']:
-                subject = info.get('subject', 'N/A')
-                lesson_type = f"({info.get('type', '')})" if info.get('type') else ""
-                message += f"  - {subject} {lesson_type}\n"
+            for i, info in enumerate(lesson['lessons_info']):
+                if i > 0:
+                    message += "  ---\n" # Separator for multiple lessons in one slot
+
+                subject = info.get('subject', 'Невідомо')
+                lesson_type = f" ({info.get('type', '')})" if info.get('type') else ""
+                message += f"  Предмет: {subject}{lesson_type}\n"
 
                 if 'groups' in info:
-                    message += f"    Groups: {', '.join(info['groups'])}\n"
+                    groups_str = ', '.join(info['groups'])
+                    message += f"  Групи: {groups_str}\n"
                 if 'teachers' in info:
-                    message += f"    Teacher: {', '.join(info['teachers'])}\n"
+                    message += f"  Викладач: {', '.join(info['teachers'])}\n"
                 if 'links' in info:
                     for link in info['links']:
-                        message += f"    [Link]({link})\n"
+                        message += f"  Посилання: {link}\n"
             message += "\n"
-        message += "\n"
+        message += "=" * 25 + "\n\n"
     
+    message += "```" # End of monospace block
     return message
 
 
@@ -84,13 +103,13 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     html = get_schedule_html(fetch_identifier)
     
     if not html:
-        await update.message.reply_text("Failed to download schedule data.")
+        await update.message.reply_text("Не вдалося завантажити дані розкладу.")
         return
 
     parsed_schedule = parse_schedule(html)
 
     if not parsed_schedule:
-        await update.message.reply_text("Failed to parse schedule data.")
+        await update.message.reply_text("Не вдалося розпізнати дані розкладу.")
         return
 
     # Filter schedule based on user's subjects
@@ -125,9 +144,20 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     
     # Split message into chunks if it's too long for a single Telegram message
     max_length = 4096
-    for i in range(0, len(formatted_message), max_length):
-        chunk = formatted_message[i:i+max_length]
-        await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
+    if len(formatted_message) < max_length:
+        await update.message.reply_text(formatted_message, parse_mode=ParseMode.MARKDOWN)
+    else:
+        for i in range(0, len(formatted_message), max_length):
+            # Ensure code blocks are properly closed in each chunk
+            chunk = formatted_message[i:i+max_length]
+            if chunk.startswith("```") and not chunk.endswith("```"):
+                chunk += "```"
+            if not chunk.startswith("```") and chunk.endswith("```"):
+                chunk = "```" + chunk
+            if not chunk.startswith("```") and not chunk.endswith("```"):
+                chunk = "```" + chunk + "```"
+
+            await update.message.reply_text(chunk, parse_mode=ParseMode.MARKDOWN)
 
 
 async def setgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -160,9 +190,10 @@ async def setgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if group_id:
             storage.set_user_setting(user_id, 'group_id', group_id)
         
-        await update.message.reply_text(f"Success! Your group is set to {group_name}.\n\nNow you can add subjects to monitor with /addsubject or view the full schedule with /schedule.")
+        await update.message.reply_text(f"✅ Групу успішно встановлено на {group_name}.\n\nТепер можна додати предмети для відстеження (/addsubject) або переглянути повний розклад.",
+                                      reply_markup=ReplyKeyboardMarkup(MAIN_KEYBOARD, resize_keyboard=True))
     else:
-        await update.message.reply_text(f"Could not find or validate group '{group_name}'. Please check the name and try again.")
+        await update.message.reply_text(f"Не вдалося знайти або перевірити групу '{group_name}'. Перевірте назву та спробуйте ще раз.")
 
 
 async def addsubject_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -178,9 +209,9 @@ async def addsubject_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if subject_name.lower() not in [s.lower() for s in subjects]:
         subjects.append(subject_name)
         storage.set_user_setting(user_id, 'subjects', subjects)
-        await update.message.reply_text(f"'{subject_name}' added to your subjects list.")
+        await update.message.reply_text(f"✅ Предмет '{subject_name}' додано до вашого списку.")
     else:
-        await update.message.reply_text(f"'{subject_name}' is already in your subjects list.")
+        await update.message.reply_text(f"Предмет '{subject_name}' вже є у вашому списку.")
     
     await mysubjects_command(update, context)
 
@@ -200,9 +231,9 @@ async def removesubject_command(update: Update, context: ContextTypes.DEFAULT_TY
 
     if len(subjects) < original_count:
         storage.set_user_setting(user_id, 'subjects', subjects)
-        await update.message.reply_text(f"'{subject_to_remove}' removed from your subjects list.")
+        await update.message.reply_text(f"🗑️ Предмет '{subject_to_remove}' видалено зі списку.")
     else:
-        await update.message.reply_text(f"'{subject_to_remove}' was not found in your subjects list.")
+        await update.message.reply_text(f"Предмет '{subject_to_remove}' не знайдено у вашому списку.")
 
     await mysubjects_command(update, context)
 
@@ -212,11 +243,11 @@ async def mysubjects_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_id = update.effective_user.id
     subjects = storage.get_user_setting(user_id, 'subjects', [])
     if subjects:
-        message = "You are currently monitoring the following subjects:\n"
-        message += "\n".join([f"- {s}" for s in subjects])
-        message += "\n\nYour /schedule will only show these subjects. Use /removesubject to remove one or /showall to see the full schedule."
+        message = "Ви відстежуєте розклад для таких предметів:\n"
+        message += "\n".join([f" - {s}" for s in subjects])
+        message += "\n\nКоманда /schedule показуватиме пари лише для них. Використовуйте /removesubject, щоб видалити предмет, або /showall, щоб побачити повний розклад."
     else:
-        message = "You are not monitoring any specific subjects. Your /schedule will show all lessons.\nUse /addsubject to add one."
+        message = "Ви не відстежуєте жодного предмету. /schedule показуватиме всі пари.\n\nВикористовуйте /addsubject, щоб додати предмет до списку."
     
     await update.message.reply_text(message)
 
@@ -225,8 +256,25 @@ async def showall_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     """Clears the subject filter and shows the full schedule."""
     user_id = update.effective_user.id
     storage.set_user_setting(user_id, 'subjects', [])
-    await update.message.reply_text("Subject filter cleared. Fetching the full schedule...")
+    await update.message.reply_text("Фільтр предметів очищено. Завантажую повний розклад...")
     await schedule_command(update, context)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Displays a help message with all available commands."""
+    help_text = (
+        "🤖 *Доступні команди:*\n\n"
+        "*/start* - Почати роботу та показати меню.\n"
+        "*/schedule* - Показати розклад для вашої групи (з урахуванням фільтрів).\n"
+        "*/setgroup <назва_групи>* - Встановити вашу групу. *Це потрібно зробити в першу чергу!*\n"
+        "   _Приклад: /setgroup ІПм-24-1_\n\n"
+        "*/addsubject <назва>* - Додати предмет до фільтра. Можна вводити часткову назву.\n"
+        "   _Приклад: /addsubject Креативна економіка_\n\n"
+        "*/removesubject <назва>* - Видалити предмет з фільтра.\n"
+        "*/mysubjects* - Показати список предметів, які ви відстежуєте.\n"
+        "*/showall* - Очистити фільтр предметів і показати повний розклад.\n\n"
+        "Також можна використовувати кнопки в меню для швидкого доступу."
+    )
+    await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
 
 
 def main() -> None:
@@ -236,6 +284,7 @@ def main() -> None:
 
     # on different commands - answer in Telegram
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("schedule", schedule_command))
     application.add_handler(CommandHandler("setgroup", setgroup_command))
     application.add_handler(CommandHandler("addsubject", addsubject_command))
@@ -243,11 +292,30 @@ def main() -> None:
     application.add_handler(CommandHandler("mysubjects", mysubjects_command))
     application.add_handler(CommandHandler("showall", showall_command))
 
-    # Run the bot until the user presses Ctrl-C
-    application.run_polling()
+    # Add handlers for menu buttons
+    application.add_handler(MessageHandler(filters.TEXT & (filters.Regex(f"^{SCHEDULE_CMD}$")), schedule_command))
+    application.add_handler(MessageHandler(filters.TEXT & (filters.Regex(f"^{MY_SUBJECTS_CMD}$")), mysubjects_command))
+    application.add_handler(MessageHandler(filters.TEXT & (filters.Regex(f"^{HELP_CMD}$")), help_command))
 
+
+    # Run the bot in a separate thread
+    thread = threading.Thread(target=application.run_polling)
+    thread.start()
+
+
+# Flask web server to keep the bot alive on Render
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    return "Bot is running!"
 
 if __name__ == "__main__":
     if not BOT_TOKEN:
         raise ValueError("TELEGRAM_BOT_TOKEN is not set in the .env file or environment variables.")
     main()
+    # The Flask app is run by gunicorn as defined in the Procfile,
+    # so we don't need app.run() here when deploying.
+    # For local testing, you might add it like this:
+    # if os.environ.get('FLASK_ENV') == 'development':
+    #     app.run(port=int(os.environ.get('PORT', 8080)))
