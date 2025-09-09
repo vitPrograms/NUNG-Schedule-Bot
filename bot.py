@@ -305,7 +305,8 @@ def main() -> None:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         # run_polling is a blocking call that will run forever
-        application.run_polling()
+        # We disable signal handling as it's not supported in non-main threads
+        application.run_polling(stop_signals=None)
 
     # Start the bot in a separate thread
     thread = threading.Thread(target=bot_thread_target)
