@@ -69,6 +69,7 @@ def parse_lesson_details(details_html):
     # A more specific pattern for groups like ІПм-24-1
     group_name_pattern = re.compile(r'[\w\s-]+-\d+-\d+') 
     teacher_pattern = re.compile(r'викладач\s(.+)', re.IGNORECASE)
+    link_pattern = re.compile(r'https?://\S+') # This was the missing line
     subgroup_pattern = re.compile(r'підгр\.\s*\d', re.IGNORECASE)
 
     subject_found = False
