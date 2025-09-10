@@ -17,6 +17,8 @@ from bs4 import BeautifulSoup
 # Load environment variables from .env file
 load_dotenv()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("TELEGRAM_BOT_TOKEN is not set in the .env file or environment variables.")
 
 # Enable logging
 logging.basicConfig(
@@ -278,12 +280,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
 
 
-def main() -> None:
-    """Start the bot."""
-    # Create the Application and pass it your bot's token.
+# --- Bot Setup and Threading ---
+def setup_bot():
+    """Creates and configures the bot application, then returns it."""
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # on different commands - answer in Telegram
+    # Add all command and message handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("schedule", schedule_command))
@@ -293,39 +295,36 @@ def main() -> None:
     application.add_handler(CommandHandler("mysubjects", mysubjects_command))
     application.add_handler(CommandHandler("showall", showall_command))
 
-    # Add handlers for menu buttons
     application.add_handler(MessageHandler(filters.TEXT & (filters.Regex(f"^{SCHEDULE_CMD}$")), schedule_command))
     application.add_handler(MessageHandler(filters.TEXT & (filters.Regex(f"^{MY_SUBJECTS_CMD}$")), mysubjects_command))
     application.add_handler(MessageHandler(filters.TEXT & (filters.Regex(f"^{HELP_CMD}$")), help_command))
+    
+    return application
+
+def bot_thread_target(application: Application):
+    """The target function for the bot's thread."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    application.run_polling(stop_signals=None)
+
+# Create the bot application instance
+bot_app = setup_bot()
+
+# Start the bot in a separate, non-daemon thread
+thread = threading.Thread(target=bot_thread_target, args=(bot_app,))
+thread.start()
 
 
-    # This function will run in a separate thread
-    def bot_thread_target():
-        # Create a new event loop for this thread
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        # run_polling is a blocking call that will run forever
-        # We disable signal handling as it's not supported in non-main threads
-        application.run_polling(stop_signals=None)
-
-    # Start the bot in a separate thread
-    thread = threading.Thread(target=bot_thread_target)
-    thread.start()
-
-
-# Flask web server to keep the bot alive on Render
+# --- Flask Web Server ---
+# This part keeps the Render instance alive
 app = Flask(__name__)
 
 @app.route('/')
 def index():
     return "Bot is running!"
 
+# This block is for local execution only, to easily run the web server.
+# When deploying with Gunicorn, Gunicorn runs 'app', and this block is not executed.
 if __name__ == "__main__":
-    if not BOT_TOKEN:
-        raise ValueError("TELEGRAM_BOT_TOKEN is not set in the .env file or environment variables.")
-    main()
-    # The Flask app is run by gunicorn as defined in the Procfile,
-    # so we don't need app.run() here when deploying.
-    # For local testing, you might add it like this:
-    # if os.environ.get('FLASK_ENV') == 'development':
-    #     app.run(port=int(os.environ.get('PORT', 8080)))
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
