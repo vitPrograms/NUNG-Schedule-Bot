@@ -56,6 +56,12 @@ def parse_lesson_details(details_html):
     """Parses the details of a single lesson."""
     lesson_info = defaultdict(list)
     
+    # --- Corrected Link Extraction ---
+    # First, extract all full links from <a> tags to avoid truncated URLs from text
+    links = [a['href'] for a in details_html.find_all('a', href=True)]
+    if links:
+        lesson_info['links'] = sorted(list(set(links))) # Store unique links
+    
     lines = [line.strip() for line in details_html.get_text('\n').split('\n') if line.strip()]
 
     # Regex patterns
@@ -63,7 +69,6 @@ def parse_lesson_details(details_html):
     # A more specific pattern for groups like ІПм-24-1
     group_name_pattern = re.compile(r'[\w\s-]+-\d+-\d+') 
     teacher_pattern = re.compile(r'викладач\s(.+)', re.IGNORECASE)
-    link_pattern = re.compile(r'https?://\S+')
     subgroup_pattern = re.compile(r'підгр\.\s*\d', re.IGNORECASE)
 
     subject_found = False
@@ -93,11 +98,8 @@ def parse_lesson_details(details_html):
         if subgroup_match:
             lesson_info['subgroup'] = subgroup_match.group(0).strip()
 
-        # Check for links
-        link_match = link_pattern.search(line)
-        if link_match:
-            lesson_info['links'].append(link_match.group(0).strip())
-
+        # We no longer need to parse links from text, as we get them from hrefs above
+        
     if not subject_found:
         # Fallback: Find the most likely candidate for the subject name
         for line in lines:

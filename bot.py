@@ -210,11 +210,13 @@ def build_subjects_keyboard(user_id: int, subjects: list[str], page: int = 0) ->
     paginated_subjects = subjects[start_offset:end_offset]
 
     keyboard = []
-    for subject in paginated_subjects:
+    for i, subject in enumerate(paginated_subjects):
+        # Use the global index for the subject in the callback data
+        global_index = start_offset + i
         status_icon = "✅" if subject in user_subjects else "⬜️"
         button = InlineKeyboardButton(
             f"{status_icon} {subject}",
-            callback_data=f"toggle_subject_{page}_{subject}"
+            callback_data=f"toggle:{page}:{global_index}"
         )
         keyboard.append([button])
 
@@ -222,14 +224,14 @@ def build_subjects_keyboard(user_id: int, subjects: list[str], page: int = 0) ->
     total_pages = math.ceil(len(subjects) / SUBJECTS_PER_PAGE)
     nav_buttons = []
     if page > 0:
-        nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"subjects_page_{page-1}"))
+        nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"page:{page-1}"))
     if page < total_pages - 1:
-        nav_buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"subjects_page_{page+1}"))
+        nav_buttons.append(InlineKeyboardButton("Вперед ➡️", callback_data=f"page:{page+1}"))
     
     if nav_buttons:
         keyboard.append(nav_buttons)
 
-    keyboard.append([InlineKeyboardButton("💾 Зберегти і закрити", callback_data="save_subjects")])
+    keyboard.append([InlineKeyboardButton("💾 Зберегти і закрити", callback_data="save")])
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -272,28 +274,49 @@ async def subjects_callback_handler(update: Update, context: ContextTypes.DEFAUL
 
     user_id = query.from_user.id
     data = query.data
+    parts = data.split(':')
+    action = parts[0]
+    
     all_subjects = context.user_data.get('all_subjects', [])
 
-    if data.startswith("subjects_page_"):
-        page = int(data.split('_')[-1])
-        keyboard = build_subjects_keyboard(user_id, all_subjects, page=page)
-        await query.edit_message_text("Оберіть предмети:", reply_markup=keyboard)
+    if action == "page":
+        try:
+            page = int(parts[1])
+            keyboard = build_subjects_keyboard(user_id, all_subjects, page=page)
+            await query.edit_message_text("Оберіть предмети:", reply_markup=keyboard)
+        except (ValueError, IndexError):
+            await query.answer("Помилка обробки сторінки.")
 
-    elif data.startswith("toggle_subject_"):
-        _, page_str, subject = data.split('_', 2)
-        page = int(page_str)
-        
-        user_subjects = storage.get_user_setting(user_id, 'subjects', [])
-        if subject in user_subjects:
-            user_subjects.remove(subject)
-        else:
-            user_subjects.append(subject)
-        storage.set_user_setting(user_id, 'subjects', user_subjects)
+    elif action == "toggle":
+        try:
+            page = int(parts[1])
+            subject_index = int(parts[2])
 
-        keyboard = build_subjects_keyboard(user_id, all_subjects, page=page)
-        await query.edit_message_reply_markup(keyboard)
+            if not all_subjects or subject_index >= len(all_subjects):
+                await query.edit_message_text(
+                    "Помилка: список предметів застарів. Будь ласка, відкрийте меню знову командою /managesubjects.", 
+                    reply_markup=None
+                )
+                return
 
-    elif data == "save_subjects":
+            subject = all_subjects[subject_index]
+            
+            user_subjects = storage.get_user_setting(user_id, 'subjects', [])
+            if subject in user_subjects:
+                user_subjects.remove(subject)
+            else:
+                user_subjects.append(subject)
+            storage.set_user_setting(user_id, 'subjects', user_subjects)
+
+            keyboard = build_subjects_keyboard(user_id, all_subjects, page=page)
+            await query.edit_message_reply_markup(keyboard)
+        except (ValueError, IndexError):
+            await query.edit_message_text(
+                "Сталася помилка. Будь ласка, відкрийте меню знову командою /managesubjects.", 
+                reply_markup=None
+            )
+
+    elif action == "save":
         user_subjects = storage.get_user_setting(user_id, 'subjects', [])
         if user_subjects:
             message = "✅ Ваші налаштування збережено. Ви відстежуєте:\n" + "\n".join(f" - {s}" for s in user_subjects)
