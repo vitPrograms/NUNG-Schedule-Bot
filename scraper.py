@@ -130,6 +130,44 @@ def parse_lesson_details(details_html):
     return dict(lesson_info)
 
 
+def parse_unique_subjects(html_content: str) -> list[str]:
+    """
+    Parses the HTML content to find all unique subject names.
+    """
+    if not html_content:
+        return []
+
+    soup = BeautifulSoup(html_content, 'lxml')
+    subjects = set()
+    
+    # The same logic as in parse_schedule to find lesson details
+    day_divs = soup.find_all('div', class_='col-md-6')
+    for day_div in day_divs:
+        rows = day_div.find_all('tr')
+        for row in rows:
+            cols = row.find_all('td')
+            if len(cols) == 3:
+                details_cell = cols[2]
+                if details_cell.get_text(strip=True):
+                    # We can reuse the detailed parser
+                    # A bit inefficient to re-parse, but ensures consistency
+                    html_content_str = str(details_cell)
+                    html_content_str = html_content_str.replace('<img', 'LESSON_SEPARATOR<img')
+                    lesson_html_parts = html_content_str.split('LESSON_SEPARATOR')
+                    for part in lesson_html_parts:
+                        if part.strip():
+                            lesson_soup = BeautifulSoup(part, 'lxml')
+                            if lesson_soup.get_text(strip=True):
+                                lesson_info = parse_lesson_details(lesson_soup)
+                                if 'subject' in lesson_info:
+                                    # Clean up the subject name from type like (Л), (Пр)
+                                    subject_name = lesson_info['subject']
+                                    subject_name = re.sub(r'\s*\((Л|Пр|Лаб)\)$', '', subject_name, flags=re.IGNORECASE).strip()
+                                    subjects.add(subject_name)
+
+    return sorted(list(subjects))
+
+
 def parse_schedule(html_content):
     """
     Parses the HTML content of the schedule page and extracts the schedule.
